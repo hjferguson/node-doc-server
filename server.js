@@ -11,29 +11,34 @@ const port = 3000;
 // Configure multer for file uploads (using memory storage)
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { fileSize: 50 * 1024 * 1024 }, // Limit file size to 50MB (adjust as needed)
 });
 
-// Function to add a placeholder directly into the DOCX XML
-function addPlaceholderToXML(zip) {
+// Function to add multiple placeholders directly into the DOCX XML based on number of images
+function addPlaceholdersToXML(zip, imageCount) {
     const documentXml = zip.file('word/document.xml').asText();
-    const placeholderParagraph = `
-        <w:p>
-            <w:r>
-                <w:t>{%image1}</w:t>
-            </w:r>
-        </w:p>
-    `;
+    let placeholders = '';
 
-    // Insert the placeholder paragraph at the end of the document body
-    const modifiedXml = documentXml.replace('</w:body>', `${placeholderParagraph}</w:body>`);
+    // Add a placeholder paragraph for each image
+    for (let i = 1; i <= imageCount; i++) {
+        placeholders += `
+            <w:p>
+                <w:r>
+                    <w:t>{%image${i}}</w:t>
+                </w:r>
+            </w:p>
+        `;
+    }
+
+    // Insert the placeholders at the end of the document body
+    const modifiedXml = documentXml.replace('</w:body>', `${placeholders}</w:body>`);
     zip.file('word/document.xml', modifiedXml);
 }
 
 // Endpoint to modify the Word document
 app.post('/modifyReport', upload.fields([
     { name: 'wordFile', maxCount: 1 },
-    { name: 'image', maxCount: 10 }
+    { name: 'image', maxCount: 15 } // Adjust maxCount as needed
 ]), async (req, res) => {
     try {
         console.log('Request received...');
@@ -45,11 +50,14 @@ app.post('/modifyReport', upload.fields([
 
         console.log('Word file details:', wordFile);
 
+        const images = req.files['image'] || [];
+        console.log(`Number of images received: ${images.length}`);
+
         const content = wordFile.buffer;
         const zip = new PizZip(content);
 
-        // Add the placeholder to the XML directly
-        addPlaceholderToXML(zip);
+        // Add the placeholders based on the number of images
+        addPlaceholdersToXML(zip, images.length);
 
         // Set up the image module
         const imageModule = new ImageModule({
@@ -57,17 +65,29 @@ app.post('/modifyReport', upload.fields([
             fileType: 'docx',
             getImage: (tagValue) => {
                 console.log(`Looking for image with tag: ${tagValue}`);
-                const image = req.files['image']?.find(img => img.originalname === '1.jpg');
+                // Extract the image index from the tag (e.g., image1, image2, etc.)
+                const imageIndex = parseInt(tagValue.replace('image', ''), 10) - 1;
+                const image = images[imageIndex];
                 if (!image) {
-                    console.error(`Image file ${tagValue} not found.`);
-                    throw new Error(`Image file ${tagValue} not found.`);
+                    console.error(`Image for ${tagValue} not found.`);
+                    throw new Error(`Image for ${tagValue} not found.`);
                 }
                 console.log(`Image found: ${image.originalname}`);
                 return image.buffer;
             },
             getSize: (imgBuffer) => {
                 const size = sizeOf(imgBuffer);
-                console.log(`Image size: ${size.width}x${size.height}`);
+                const maxWidth = 400; // Set the maximum width (in pixels) for the image
+
+                // Calculate new dimensions to maintain aspect ratio if width exceeds maxWidth
+                if (size.width > maxWidth) {
+                    const aspectRatio = size.height / size.width;
+                    const newHeight = Math.round(maxWidth * aspectRatio);
+                    console.log(`Resizing image to: ${maxWidth}x${newHeight}`);
+                    return [maxWidth, newHeight];
+                }
+
+                console.log(`Original image size retained: ${size.width}x${size.height}`);
                 return [size.width, size.height];
             }
         });
@@ -77,7 +97,13 @@ app.post('/modifyReport', upload.fields([
             .attachModule(imageModule)
             .loadZip(zip);
 
-        const imagePlaceholders = { image1: '1.jpg' };
+        // Create dynamic data for images
+        const imagePlaceholders = {};
+        images.forEach((img, index) => {
+            const placeholderName = `image${index + 1}`;
+            imagePlaceholders[placeholderName] = img.originalname;
+        });
+
         console.log('Image placeholders:', imagePlaceholders);
 
         // Set data with image placeholders
