@@ -1,9 +1,9 @@
-// server.js
 const express = require('express');
 const multer = require('multer');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
-const Jimp = require('jimp');
+const ImageModule = require('docxtemplater-image-module-pwndoc'); // Use the forked version
+const sizeOf = require('image-size');
 
 const app = express();
 const port = 3000;
@@ -21,9 +21,6 @@ app.post('/modifyReport', upload.fields([
 ]), async (req, res) => {
     try {
         console.log('Request received...');
-        console.log('Files received:', req.files);
-
-        // Check if the Word document is provided
         const wordFile = req.files['wordFile']?.[0];
         if (!wordFile) {
             console.error('Word file is not present.');
@@ -32,53 +29,51 @@ app.post('/modifyReport', upload.fields([
 
         console.log('Word file details:', wordFile);
 
-        // Use the buffer directly from the uploaded file
         const content = wordFile.buffer;
         const zip = new PizZip(content);
 
-        // Initialize docxtemplater with the zip content
-        const doc = new Docxtemplater(zip, {
-            paragraphLoop: true,
-            linebreaks: true,
-        });
-
-        console.log('Document loaded successfully.');
-
-        // Process the images provided in the request
-        const images = req.files['image'] || [];
-        const processedImages = await Promise.all(images.map(async (img) => {
-            try {
-                if (!img.buffer) {
-                    console.error(`Image buffer for ${img.originalname} is undefined.`);
-                    return null;
+        // Set up the image module
+        const imageModule = new ImageModule({
+            centered: false,
+            fileType: 'docx',
+            getImage: (tagValue) => {
+                console.log(`Looking for image with tag: ${tagValue}`);
+                // Find the image file in the uploaded files based on tagValue
+                const image = req.files['image']?.find(img => img.originalname === '1.jpg');
+                if (!image) {
+                    throw new Error(`Image file ${tagValue} not found`);
                 }
-
-                // Use Jimp to read and resize the image buffer
-                const image = await Jimp.read(img.buffer);
-                const resizedBuffer = await image.resize(200, 200).getBufferAsync(Jimp.MIME_PNG);
-                return resizedBuffer;
-            } catch (error) {
-                console.error(`Error processing image ${img.originalname}:`, error);
-                return null;
-            }
-        }));
-
-        console.log('All images processed.');
-
-        // Assuming you want to add each image at the end of the document
-        processedImages.forEach((imgBuffer, index) => {
-            if (imgBuffer) {
-                // This is where you could potentially add the image to the document
-                // You'll need to modify this based on how you want to add images to docxtemplater
-                // Currently, the code sets data placeholders, assuming further handling elsewhere
-                doc.setData({
-                    [`image${index + 1}`]: imgBuffer.toString('base64'),
-                });
+                console.log(`Image found: ${image.originalname}`);
+                return image.buffer; // Return the image buffer directly
+            },
+            getSize: (imgBuffer) => {
+                // Get image dimensions using image-size
+                const size = sizeOf(imgBuffer);
+                console.log(`Image size: ${size.width}x${size.height}`);
+                return [size.width, size.height];
             }
         });
+
+        // Initialize docxtemplater with the zip content and attach the image module
+        const doc = new Docxtemplater()
+            .attachModule(imageModule)
+            .loadZip(zip);
+
+        // Assuming a single placeholder called {%image1} in your DOCX
+        const imagePlaceholders = { image1: '1.jpg' };
+        console.log('Image placeholders:', imagePlaceholders);
+
+        doc.setData(imagePlaceholders);
+
+        // Render the document with the new images
+        try {
+            doc.render();
+        } catch (renderError) {
+            console.error('Error during document rendering:', renderError);
+            return res.status(500).send('Error rendering the document');
+        }
 
         // Generate the modified document buffer
-        doc.render();
         const outputBuffer = doc.getZip().generate({ type: 'nodebuffer' });
 
         // Set headers and send the modified document as the response
