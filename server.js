@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
-const ImageModule = require('docxtemplater-image-module-pwndoc'); // Use the forked version
+const ImageModule = require('docxtemplater-image-module-pwndoc');
 const sizeOf = require('image-size');
 
 const app = express();
@@ -11,8 +11,24 @@ const port = 3000;
 // Configure multer for file uploads (using memory storage)
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 }, // Limit file size to 50MB (adjust as needed)
+    limits: { fileSize: 50 * 1024 * 1024 },
 });
+
+// Function to add a placeholder directly into the DOCX XML
+function addPlaceholderToXML(zip) {
+    const documentXml = zip.file('word/document.xml').asText();
+    const placeholderParagraph = `
+        <w:p>
+            <w:r>
+                <w:t>{%image1}</w:t>
+            </w:r>
+        </w:p>
+    `;
+
+    // Insert the placeholder paragraph at the end of the document body
+    const modifiedXml = documentXml.replace('</w:body>', `${placeholderParagraph}</w:body>`);
+    zip.file('word/document.xml', modifiedXml);
+}
 
 // Endpoint to modify the Word document
 app.post('/modifyReport', upload.fields([
@@ -32,22 +48,24 @@ app.post('/modifyReport', upload.fields([
         const content = wordFile.buffer;
         const zip = new PizZip(content);
 
+        // Add the placeholder to the XML directly
+        addPlaceholderToXML(zip);
+
         // Set up the image module
         const imageModule = new ImageModule({
             centered: false,
             fileType: 'docx',
             getImage: (tagValue) => {
                 console.log(`Looking for image with tag: ${tagValue}`);
-                // Find the image file in the uploaded files based on tagValue
                 const image = req.files['image']?.find(img => img.originalname === '1.jpg');
                 if (!image) {
-                    throw new Error(`Image file ${tagValue} not found`);
+                    console.error(`Image file ${tagValue} not found.`);
+                    throw new Error(`Image file ${tagValue} not found.`);
                 }
                 console.log(`Image found: ${image.originalname}`);
-                return image.buffer; // Return the image buffer directly
+                return image.buffer;
             },
             getSize: (imgBuffer) => {
-                // Get image dimensions using image-size
                 const size = sizeOf(imgBuffer);
                 console.log(`Image size: ${size.width}x${size.height}`);
                 return [size.width, size.height];
@@ -59,15 +77,16 @@ app.post('/modifyReport', upload.fields([
             .attachModule(imageModule)
             .loadZip(zip);
 
-        // Assuming a single placeholder called {%image1} in your DOCX
         const imagePlaceholders = { image1: '1.jpg' };
         console.log('Image placeholders:', imagePlaceholders);
 
+        // Set data with image placeholders
         doc.setData(imagePlaceholders);
 
-        // Render the document with the new images
         try {
+            console.log('Rendering the document...');
             doc.render();
+            console.log('Document rendered successfully.');
         } catch (renderError) {
             console.error('Error during document rendering:', renderError);
             return res.status(500).send('Error rendering the document');
